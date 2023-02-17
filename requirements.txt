@@ -1,0 +1,4 @@
+beautifulsoup4
+tiktoken
+openai[embeddings]
+fastapi[all]
