@@ -330,7 +330,6 @@ async def create_context(
     """
     
     # Get the embeddings for the question
-    # q_embeddings = openai.Embedding.create(input=question, engine="text-embedding-ada-002")['data'][0]['embedding']
     q_embeddings = await openai.Embedding.acreate(input=question, engine="text-embedding-ada-002")
     q_embeddings = q_embeddings['data'][0]['embedding']
 
