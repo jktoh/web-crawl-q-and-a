@@ -43,9 +43,6 @@ class HyperlinkParser(HTMLParser):
         if tag == "a" and "href" in attrs:
             self.hyperlinks.append(attrs["href"])
 
-# Load the cl100k_base tokenizer which is designed to work with the ada-002 model
-tokenizer = tiktoken.get_encoding("cl100k_base")
-
 app = FastAPI()
 
 ################################################################################
@@ -211,11 +208,11 @@ async def convert_text_to_csv(domain: str = domain):
 ################################################################################
 ### Step 7
 ################################################################################
+# Load the cl100k_base tokenizer which is designed to work with the ada-002 model
+tokenizer = tiktoken.get_encoding("cl100k_base")
 @app.post("/tokenize")
 async def tokenize(df: dict):
     df: pd.DataFrame = pd.DataFrame(df)
-    # Load the cl100k_base tokenizer which is designed to work with the ada-002 model
-    # tokenizer = tiktoken.get_encoding("cl100k_base")
 
     df = pd.read_csv('processed/scraped.csv', index_col=0)
     df.columns = ['title', 'text']
