@@ -12,13 +12,14 @@ from collections import deque
 from html.parser import HTMLParser
 from urllib.parse import urlparse
 import os
+import polars as pl
 import pandas as pd
 import tiktoken
 import openai
 from openai.embeddings_utils import distances_from_embeddings
 import numpy as np
-from fastapi import Depends, FastAPI
-from typing import Any
+from fastapi import Depends, FastAPI, HTTPException
+from typing import Any, Union
 
 # Regex pattern to match a URL
 HTTP_URL_PATTERN = r'^http[s]*://.+'
@@ -200,7 +201,7 @@ async def convert_text_to_csv(domain: str = domain):
 
     # Set the text column to be the raw text with the newlines removed
     df['text'] = df.fname + ". " + await remove_newlines(df.text)
-    df.to_csv('processed/scraped.csv')
+    # df.to_csv('processed/scraped.csv')
     print(df.head())
     return df.to_dict()
 
@@ -297,20 +298,39 @@ async def update_shortened_n_tokens(shortened: list):
 ### Step 10
 ################################################################################
 @app.post("/create-embeddings")
-async def create_embeddings(df: dict, path: str = "processed/embeddings.csv"):
-    df: pd.DataFrame = pd.DataFrame(df)
-    df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
+async def create_embeddings(df: Union[dict, list]):
+    if type(df) == dict:
+        df = pl.DataFrame({k: v.values() for k, v in df.items()})
+    else:
+        df = pl.DataFrame(df)
+    df: pl.DataFrame
+    try:
+        df = df.with_columns([
+            pl.col("text").apply(lambda x: str(openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])).alias("embeddings")
+        ])
+        df.write_csv(file)
+    except Exception as e:
+        raise HTTPException(
+            status_code=e.http_status,
+            detail=e.error,
+        )
+    # df: pd.DataFrame = pd.DataFrame(df)
+    # df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
     # df.to_csv('processed/embeddings.csv')
-    df.to_csv(path)
     print(df.head())
+    return df.to_dicts()
     
 ################################################################################
 ### Step 11
 ################################################################################
 
-async def embeddings_to_numpy():
-    df=pd.read_csv('processed/embeddings.csv', index_col=0)
-    df['embeddings'] = df['embeddings'].apply(eval).apply(np.array)
+async def embeddings_to_numpy(df: list):
+    df: pl.DataFrame = pl.DataFrame(df)
+    df = df.with_columns([
+        pl.col("embeddings").apply(eval).apply(np.array)
+    ])
+    # df=pd.read_csv('processed/embeddings.csv', index_col=0)
+    # df['embeddings'] = df['embeddings'].apply(eval).apply(np.array)
 
     print(df.head())
     return df
@@ -319,7 +339,7 @@ async def embeddings_to_numpy():
 ################################################################################
 @app.post("/create-context")
 async def create_context(
-    question, df: pd.DataFrame = Depends(embeddings_to_numpy), max_len: int = 1800, size: str = "ada"
+    question, df: pl.DataFrame = Depends(embeddings_to_numpy), max_len: int = 1800, size: str = "ada"
 ):
     """
     Create a context for a question by finding the most similar context from the dataframe
@@ -330,14 +350,18 @@ async def create_context(
     q_embeddings = q_embeddings['data'][0]['embedding']
 
     # Get the distances from the embeddings
-    df['distances'] = distances_from_embeddings(q_embeddings, df['embeddings'].values, distance_metric='cosine')
+    df = df.with_columns([
+        pl.Series("distances", distances_from_embeddings(q_embeddings, df['embeddings'].to_list(), distance_metric='cosine'))
+    ])
+    # df['distances'] = distances_from_embeddings(q_embeddings, df['embeddings'].values, distance_metric='cosine')
 
 
     returns = []
     cur_len = 0
 
     # Sort by distance and add the text to the context until the context is too long
-    for i, row in df.sort_values('distances', ascending=True).iterrows():
+    for row in df.sort("distances", reverse=True).iter_rows(named=True):
+    # for i, row in df.sort_values('distances', ascending=True).iterrows():
         
         # Add the length of the text to the current length
         cur_len += row['n_tokens'] + 4
