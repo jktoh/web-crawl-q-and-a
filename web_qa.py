@@ -214,7 +214,7 @@ tokenizer = tiktoken.get_encoding("cl100k_base")
 async def tokenize(df: dict):
     df: pd.DataFrame = pd.DataFrame(df)
 
-    df = pd.read_csv('processed/scraped.csv', index_col=0)
+    # df = pd.read_csv('processed/scraped.csv', index_col=0)
     df.columns = ['title', 'text']
 
     # Tokenize the text and save the number of tokens to a new column
