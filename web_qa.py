@@ -15,11 +15,10 @@ import os
 import pandas as pd
 import tiktoken
 import openai
-from openai.embeddings_utils import distances_from_embeddings, cosine_similarity
+from openai.embeddings_utils import distances_from_embeddings
 import numpy as np
 from fastapi import Depends, FastAPI
 from typing import Any
-import json
 
 # Regex pattern to match a URL
 HTTP_URL_PATTERN = r'^http[s]*://.+'
