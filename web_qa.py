@@ -298,7 +298,7 @@ async def update_shortened_n_tokens(shortened: list):
 ### Step 10
 ################################################################################
 @app.post("/create-embeddings")
-async def create_embeddings(df: Union[dict, list]):
+async def create_embeddings(df: Union[dict, list], file: str = "processed/embeddings.csv"):
     if type(df) == dict:
         df = pl.DataFrame({k: v.values() for k, v in df.items()})
     else:
@@ -308,17 +308,16 @@ async def create_embeddings(df: Union[dict, list]):
         df = df.with_columns([
             pl.col("text").apply(lambda x: str(openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])).alias("embeddings")
         ])
-        df.write_csv(file)
+        # df: pd.DataFrame = pd.DataFrame(df)
+        # df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
+        # df.to_csv('processed/embeddings.csv')
+        print(df.head())
+        return df.to_dicts()
     except Exception as e:
         raise HTTPException(
-            status_code=e.http_status,
-            detail=e.error,
+            status_code=500,
+            detail=str(e),
         )
-    # df: pd.DataFrame = pd.DataFrame(df)
-    # df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
-    # df.to_csv('processed/embeddings.csv')
-    print(df.head())
-    return df.to_dicts()
     
 ################################################################################
 ### Step 11
