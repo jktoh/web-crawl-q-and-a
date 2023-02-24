@@ -112,6 +112,31 @@ def get_domain_hyperlinks(local_domain: str = domain, url: str = full_url):
 ################################################################################
 ### Step 4
 ################################################################################
+@app.get("/save-url")
+def save_url(local_domain: str = domain, url: str = full_url):
+    # Create a directory to store the text files
+    if not os.path.exists("text/"):
+            os.mkdir("text/")
+
+    if not os.path.exists("text/"+local_domain+"/"):
+            os.mkdir("text/" + local_domain + "/")
+
+    # Save text from the url to a <url>.txt file
+    with open('text/'+local_domain+'/'+url[8:].replace("/", "_") + ".txt", "w", encoding="UTF-8") as f:
+
+        # Get the text from the URL using BeautifulSoup
+        soup = BeautifulSoup(requests.get(url).text, "html.parser")
+
+        # Get the text but remove the tags
+        text = soup.get_text()
+
+        # If the crawler gets to a page that requires JavaScript, it will stop the crawl
+        if ("You need to enable JavaScript to run this app." in text):
+            print("Unable to parse page " + url + " due to JavaScript being required")
+        
+        # Otherwise, write the text to the file in the text directory
+        f.write(text)
+
 
 @app.get("/crawl")
 def crawl(url: str = full_url):
@@ -141,22 +166,22 @@ def crawl(url: str = full_url):
         # Get the next URL from the queue
         url = queue.pop()
         print(url) # for debugging and to see the progress
-
+        save_url(local_domain=local_domain, url=url)
         # Save text from the url to a <url>.txt file
-        with open('text/'+local_domain+'/'+url[8:].replace("/", "_") + ".txt", "w", encoding="UTF-8") as f:
+        # with open('text/'+local_domain+'/'+url[8:].replace("/", "_") + ".txt", "w", encoding="UTF-8") as f:
 
-            # Get the text from the URL using BeautifulSoup
-            soup = BeautifulSoup(requests.get(url).text, "html.parser")
+        #     # Get the text from the URL using BeautifulSoup
+        #     soup = BeautifulSoup(requests.get(url).text, "html.parser")
 
-            # Get the text but remove the tags
-            text = soup.get_text()
+        #     # Get the text but remove the tags
+        #     text = soup.get_text()
 
-            # If the crawler gets to a page that requires JavaScript, it will stop the crawl
-            if ("You need to enable JavaScript to run this app." in text):
-                print("Unable to parse page " + url + " due to JavaScript being required")
+        #     # If the crawler gets to a page that requires JavaScript, it will stop the crawl
+        #     if ("You need to enable JavaScript to run this app." in text):
+        #         print("Unable to parse page " + url + " due to JavaScript being required")
             
-            # Otherwise, write the text to the file in the text directory
-            f.write(text)
+        #     # Otherwise, write the text to the file in the text directory
+        #     f.write(text)
 
         # Get the hyperlinks from the URL and add them to the queue
         for link in get_domain_hyperlinks(local_domain, url):
@@ -267,7 +292,7 @@ async def split_into_many(text: str, max_tokens: int = max_tokens):
     
 
 @app.post("/split")
-async def split(df: dict):
+async def split(df: dict, max_tokens: int = max_tokens):
     shortened = []
     df: pd.DataFrame = pd.DataFrame(df)
     # Loop through the dataframe
@@ -279,7 +304,7 @@ async def split(df: dict):
 
         # If the number of tokens is greater than the max number of tokens, split the text into chunks
         if row[1]['n_tokens'] > max_tokens:
-            shortened += await split_into_many(row[1]['text'])
+            shortened += await split_into_many(row[1]['text'], max_tokens)
         
         # Otherwise, add the text to the list of shortened texts
         else:
@@ -288,26 +313,28 @@ async def split(df: dict):
 ################################################################################
 ### Step 9
 ################################################################################
-@app.post("/update-shortened-n-tokens")
-async def update_shortened_n_tokens(shortened: list):
-    df = pd.DataFrame(shortened, columns = ['text'])
-    df['n_tokens'] = df.text.apply(lambda x: len(tokenizer.encode(x)))
+@app.post("/update-n-tokens")
+async def update_n_tokens(df: list):
+    df: pl.DataFrame = pl.DataFrame(df, schema=["text"])
+    df = df.with_columns([
+        pl.col("text").apply(lambda x: len(tokenizer.encode(x))).alias("n_tokens")
+    ])
+    return df.to_dicts()
+    # df = pd.DataFrame(shortened, columns = ['text'])
+    # df['n_tokens'] = df.text.apply(lambda x: len(tokenizer.encode(x)))
     # df.n_tokens.hist()
-    return df.to_dict()
 ################################################################################
 ### Step 10
 ################################################################################
 @app.post("/create-embeddings")
-async def create_embeddings(df: Union[dict, list], file: str = "processed/embeddings.csv"):
-    if type(df) == dict:
-        df = pl.DataFrame({k: v.values() for k, v in df.items()})
-    else:
-        df = pl.DataFrame(df)
-    df: pl.DataFrame
+async def create_embeddings(df: list, file: Union[str, None] = "processed/embeddings.csv"):
+    df: pl.DataFrame = pl.DataFrame(df)
     try:
         df = df.with_columns([
             pl.col("text").apply(lambda x: str(openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])).alias("embeddings")
         ])
+        if file:
+            df.write_csv(file)
         # df: pd.DataFrame = pd.DataFrame(df)
         # df['embeddings'] = df.text.apply(lambda x: openai.Embedding.create(input=x, engine='text-embedding-ada-002')['data'][0]['embedding'])
         # df.to_csv('processed/embeddings.csv')
@@ -323,8 +350,8 @@ async def create_embeddings(df: Union[dict, list], file: str = "processed/embedd
 ### Step 11
 ################################################################################
 
-async def embeddings_to_numpy(df: list):
-    df: pl.DataFrame = pl.DataFrame(df)
+async def embeddings_to_numpy(files: list = ["processed/embeddings.csv"]):
+    df: pl.DataFrame = pl.concat([pl.read_csv(file) for file in files])
     df = df.with_columns([
         pl.col("embeddings").apply(eval).apply(np.array)
     ])
@@ -338,28 +365,32 @@ async def embeddings_to_numpy(df: list):
 ################################################################################
 @app.post("/create-context")
 async def create_context(
-    question, df: pl.DataFrame = Depends(embeddings_to_numpy), max_len: int = 1800, size: str = "ada"
+    question, files: list = ["processed/embeddings.csv"], 
+    max_len: int = 1800, 
+    size: str = "ada", 
+    join: str = Body(default="\n\n###\n\n", embed=True),
 ):
     """
     Create a context for a question by finding the most similar context from the dataframe
     """
+    df: pl.DataFrame = await embeddings_to_numpy(files=files)
     
     # Get the embeddings for the question
     q_embeddings = await openai.Embedding.acreate(input=question, engine="text-embedding-ada-002")
     q_embeddings = q_embeddings['data'][0]['embedding']
-
+    
     # Get the distances from the embeddings
     df = df.with_columns([
         pl.Series("distances", distances_from_embeddings(q_embeddings, df['embeddings'].to_list(), distance_metric='cosine'))
     ])
     # df['distances'] = distances_from_embeddings(q_embeddings, df['embeddings'].values, distance_metric='cosine')
-
+    
 
     returns = []
     cur_len = 0
 
     # Sort by distance and add the text to the context until the context is too long
-    for row in df.sort("distances", reverse=True).iter_rows(named=True):
+    for row in df.sort("distances").iter_rows(named=True):
     # for i, row in df.sort_values('distances', ascending=True).iterrows():
         
         # Add the length of the text to the current length
@@ -373,38 +404,68 @@ async def create_context(
         returns.append(row["text"])
 
     # Return the context
-    return "\n\n###\n\n".join(returns)
+    return join.join(returns)
 
 
-@app.post("/answer-question")
-async def answer_question(
-    df: pd.DataFrame = Depends(embeddings_to_numpy),
-    model: str = "text-davinci-003",
+@app.post("/generate-prompt")
+async def generate_prompt(
+    files: list = ["processed/embeddings.csv"],
     question: str = "Am I allowed to publish model outputs to Twitter, without a human review?",
     max_len: int = 1800,
     size: str = "ada",
     debug: bool = False,
-    max_tokens: int = 150,
-    stop_sequence: Any = None
+    join: str = Body(default="\n\n###\n\n", embed=True),    
 ):
-    """
-    Answer a question based on the most similar context from the dataframe texts
-    """
     context = await create_context(
         question,
-        df,
+        files,
         max_len=max_len,
         size=size,
+        join=join
     )
     # If debug, print the raw model response
     if debug:
         print("Context:\n" + context)
         print("\n\n")
 
+    prompt = f"""Answer the question based on the context below, and if the question can't be answered based on the context, say \"I don't know\"
+    
+    Context: {context}
+            
+    ---
+    
+    Question: {question}
+    Answer:"""
+    return prompt
+
+
+@app.post("/answer-question")
+async def answer_question(
+    files: list = ["processed/embeddings.csv"],
+    model: str = "text-davinci-003",
+    question: str = "Am I allowed to publish model outputs to Twitter, without a human review?",
+    max_len: int = 1800,
+    size: str = "ada",
+    debug: bool = False,
+    max_tokens: int = 150,
+    stop_sequence: Any = None,
+    join: str = Body(default="\n\n###\n\n", embed=True),  
+):
+    """
+    Answer a question based on the most similar context from the dataframe texts
+    """
     try:
+        prompt = await generate_prompt(
+            files=files,
+            question=question,
+            max_len=max_len,
+            size=size,
+            debug=debug,
+            join=join
+        )
         # Create a completions using the questin and context
         response = await openai.Completion.acreate(
-            prompt=f"Answer the question based on the context below, and if the question can't be answered based on the context, say \"I don't know\"\n\nContext: {context}\n\n---\n\nQuestion: {question}\nAnswer:",
+            prompt=prompt,
             temperature=0,
             max_tokens=max_tokens,
             top_p=1,
